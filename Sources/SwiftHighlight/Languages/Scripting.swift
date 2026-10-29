@@ -224,7 +224,10 @@ extension BuiltinGrammars {
 
     static let shellRules: [Rule] = [
         Kit.hashComment,
-        .push(#"<<-?\s*(['"]?)([A-Za-z_]\w*)\1"#, "heredoc", scope: .keywordOperator, delimiter: 2),
+        // `<<<` is a here-string, not a heredoc.
+        .push(#"(?<!<)<<(?!<)-?\s*(['"]?)([A-Za-z_]\w*)\1"#, "heredoc", scope: .keywordOperator, delimiter: 2),
+        // A backslash quotes the next character, so `\"` and `\'` do not open strings.
+        .match(#"\\."#),
         .push(#"\$'"#, "ansiString"),
         .push("\"", "double"),
         .push(#"'"#, "single"),
@@ -259,7 +262,8 @@ extension BuiltinGrammars {
             .include("root"),
         ],
         "parens": [.push(#"\("#, "parens"), .pop(#"\)"#), .include("root")],
-        "arithmetic": [.pop(#"\)\)"#, scope: .interpolation), .include("root")],
+        // `<<` is a shift here, not a heredoc.
+        "arithmetic": [.pop(#"\)\)"#, scope: .interpolation), .match("<<"), .include("root")],
         "expansion": GrammarState(scope: .variable, rules: [
             .pop(#"\}"#, scope: .interpolation),
             .push(#"\$\{"#, "expansion", scope: .interpolation),

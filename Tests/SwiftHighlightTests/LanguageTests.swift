@@ -295,6 +295,19 @@ struct LanguageTests {
         #expect(LineState(language: builtin("yaml")) == HighlightSession(language: builtin("yaml"), text: code).endState(ofLine: 3))
     }
 
+    @Test func shellEscapedQuotesHereStringsAndShiftsOpenNothing() {
+        for code in ["echo \\\"hi\necho done # c", "echo \\'x\necho done # c", "grep foo <<< bar\necho done # c",
+                     "echo $((1 << n))\necho done # c"] {
+            let pairs = pairs(code, builtin("shell"))
+            #expect(pairs.contains("# c→comment.line"), "\(code.debugDescription): \(pairs)")
+            #expect(pairs.contains("done→keyword.control"), "\(code.debugDescription): \(pairs)")
+        }
+        // Heredocs still work.
+        let heredoc = pairs("cat <<-'EOF'\n  body\n  EOF\necho done", builtin("shell"))
+        #expect(heredoc.contains("  body→string"))
+        #expect(heredoc.contains("done→keyword.control"))
+    }
+
     /// Every built-in grammar must tokenize its sample identically with and without
     /// auto-possessification.
     @Test func possessificationPreservesTokens() throws {
