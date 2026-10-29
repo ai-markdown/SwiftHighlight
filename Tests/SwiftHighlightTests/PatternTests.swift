@@ -162,6 +162,28 @@ struct PatternTests {
         }
     }
 
+    @Test func repeatScansAreMetered() throws {
+        // A single-set repeat scans its whole run in one instruction; the scan must still be
+        // charged per scalar, or retrying it from every position of a long run is quadratic.
+        for (pattern, input) in [(" +x", String(repeating: " ", count: 200_000)),
+                                 ("a{0,1000} +x", String(repeating: " ", count: 200_000))] {
+            let (node, groups) = try PatternParser.parse(pattern)
+            var generator = CodeGenerator(builder: ProgramBuilder(), groups: groups, pattern: pattern)
+            try generator.generate(node)
+            generator.builder.emit(Instruction(op: .match))
+            let program = Program(builder: generator.builder)
+            var text = input
+            text.withUTF8 { buffer in
+                let matcher = Matcher()
+                matcher.input = buffer.baseAddress!
+                matcher.lineEnd = buffer.count
+                matcher.steps = 50_000
+                #expect(matcher.match(program.view, pc: 0, at: 0, slotCount: generator.nextHiddenSlot) == -1)
+                #expect(matcher.exhausted, "\(pattern)")
+            }
+        }
+    }
+
     @Test func syntaxErrors() throws {
         for bad in ["(", "a)", "[abc", "*a", #"\"#, "a{3,1}", #"\q"#, #"\2(a)"#, "(?P<>a)"] {
             #expect(throws: PatternError.self, "\(bad)") { try PatternParser.parse(bad) }
