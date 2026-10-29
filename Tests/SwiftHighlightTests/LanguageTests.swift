@@ -284,6 +284,17 @@ struct LanguageTests {
         #expect(!pairs.contains { $0.hasPrefix("if→") })
     }
 
+    @Test func yamlQuotesInsidePlainScalarsAreText() {
+        let code = "title: Don't panic\nsize: 5\" screen\nlist: ['a', \"b\"]\nnext: value # c\n"
+        let pairs = pairs(code, builtin("yaml"))
+        #expect(!pairs.contains { $0.hasPrefix("'t") })
+        #expect(pairs.contains("'a'→string"))
+        #expect(pairs.contains("\"b\"→string"))
+        #expect(pairs.contains("next→support.type.property-name"))
+        #expect(pairs.contains("# c→comment.line"))
+        #expect(LineState(language: builtin("yaml")) == HighlightSession(language: builtin("yaml"), text: code).endState(ofLine: 3))
+    }
+
     /// Every built-in grammar must tokenize its sample identically with and without
     /// auto-possessification.
     @Test func possessificationPreservesTokens() throws {

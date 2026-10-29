@@ -22,8 +22,10 @@ extension BuiltinGrammars {
                 .match(#"&[^\s,\[\]{}]+"#, .variable),
                 .match(#"\*[^\s,\[\]{}]+"#, .variable),
                 .match(#"!!?[\w/.:-]*"#, .typeBuiltin),
-                .push("\"", "double"),
-                .push(#"'"#, "single"),
+                // A quote opens a quoted scalar only where a scalar can start, not inside a plain
+                // scalar (`title: Don't panic`, `size: 5" screen`).
+                .push(#"(?<![^\s\[{,:])""#, "double"),
+                .push(#"(?<![^\s\[{,:])'"#, "single"),
                 .match(#"[|>][+-]?\d*(?=\s*(?:#.*)?$)"#, .keywordOperator),
                 .match(#"(?<![\w.-])[-+]?(?:0x\h+|0o[0-7]+|\d[\d_]*(?:\.\d*)?(?:[eE][+-]?\d+)?|\.inf|\.nan)(?![\w.-])"#,
                        .number),
