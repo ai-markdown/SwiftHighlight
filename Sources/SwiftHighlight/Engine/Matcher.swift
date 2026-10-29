@@ -79,7 +79,7 @@ final class Matcher {
         var vm = VM(program: program, stack: stack, capacity: stackCapacity, depth: 0, slots: slots,
                     steps: steps, input: input, lineStart: lineStart, lineEnd: lineEnd, attemptStart: pos,
                     delimiter: delimiterBuffer, delimiterCount: delimiterCount, wordScope: 0)
-        let end = vm.execute(pc: Int(pc), pos: pos, mustEnd: -1)
+        let end = vm.execute(pc: Int(pc), pos: pos, mustEnd: -1, nested: false)
         stack = vm.stack
         stackCapacity = vm.capacity
         steps = vm.steps
@@ -202,7 +202,12 @@ struct VM {
     }
 
     // swiftlint:disable:next cyclomatic_complexity function_body_length
-    mutating func execute(pc startPC: Int, pos startPos: Int, mustEnd: Int) -> Int {
+    /// Runs the body at `startPC` from `startPos`; returns the end position, or -1.
+    ///
+    /// A `nested` run (an atomic group or a lookaround body) drops its backtrack points on
+    /// success but keeps its capture restore records on the stack, so when the caller later
+    /// backtracks past the group, captures the group set are undone like any others.
+    mutating func execute(pc startPC: Int, pos startPos: Int, mustEnd: Int, nested: Bool) -> Int {
         let base = depth
         let code = program.instructions
         var pc = startPC
@@ -222,7 +227,20 @@ struct VM {
                 if mustEnd >= 0, pos != mustEnd {
                     ok = false
                 } else {
-                    depth = base
+                    if nested {
+                        var read = base
+                        var write = base
+                        while read < depth {
+                            if stack[read].kind == Choice.restore {
+                                stack[write] = stack[read]
+                                write &+= 1
+                            }
+                            read &+= 1
+                        }
+                        depth = write
+                    } else {
+                        depth = base
+                    }
                     return pos
                 }
 
@@ -282,6 +300,9 @@ struct VM {
                     pos = next
                     count &+= 1
                 }
+                // Each scanned scalar costs a step, so a run rescanned from many start positions
+                // (`\s+$` over a long run of spaces) stays within the line's budget.
+                steps &-= count
                 if count < minimum {
                     ok = false
                     break
@@ -305,6 +326,7 @@ struct VM {
                         }
                         count &+= 1
                     }
+                    steps &-= count &- minimum
                     if instruction.flag == 0, pos > floor {
                         push(Choice(kind: Choice.greedy, pc: Int32(pc &+ 1), pos: pos, x: floor, y: 0))
                     }
@@ -348,7 +370,7 @@ struct VM {
                 let negated = instruction.flag & 1 != 0
                 var found = false
                 if instruction.flag & 2 == 0 {
-                    found = execute(pc: Int(instruction.a), pos: pos, mustEnd: -1) >= 0
+                    found = execute(pc: Int(instruction.a), pos: pos, mustEnd: -1, nested: true) >= 0
                 } else {
                     let bounds = program.lookbehindBounds[Int(instruction.c)]
                     var length = Int(bounds.0)
@@ -356,7 +378,7 @@ struct VM {
                     while !found, length <= longest, steps >= 0 {
                         let start = pos &- length
                         if start == lineStart || input[start] & 0xC0 != 0x80 {
-                            found = execute(pc: Int(instruction.a), pos: start, mustEnd: pos) >= 0
+                            found = execute(pc: Int(instruction.a), pos: start, mustEnd: pos, nested: true) >= 0
                         }
                         length &+= 1
                     }
@@ -372,7 +394,7 @@ struct VM {
                 }
 
             case .atomic:
-                let end = execute(pc: Int(instruction.a), pos: pos, mustEnd: -1)
+                let end = execute(pc: Int(instruction.a), pos: pos, mustEnd: -1, nested: true)
                 if steps < 0 {
                     depth = base
                     return -1
@@ -391,6 +413,7 @@ struct VM {
                     ok = false
                 } else {
                     let length = end &- start
+                    steps &-= length
                     if lineEnd &- pos >= length, memcmp(input + start, input + pos, length) == 0 {
                         pos &+= length
                         pc &+= 1
@@ -401,6 +424,7 @@ struct VM {
 
             case .delimiter:
                 let length = delimiterCount
+                steps &-= length
                 if lineEnd &- pos >= length, memcmp(delimiter, input + pos, length) == 0 {
                     pos &+= length
                     pc &+= 1

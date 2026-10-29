@@ -73,6 +73,10 @@ struct PatternTests {
         #expect(try length("a*+a", "aaa") == nil)
         #expect(try length("(?>a+)b", "aaab") == 4)
         #expect(try length("(?>a|ab)c", "abc") == nil)
+        // An atomic lazy repeat commits to its shortest match.
+        #expect(try length("(?>a+?)", "aaa") == 1)
+        #expect(try length("(?>a*?)", "aaa") == 0)
+        #expect(try length("x(?>[a-z]{2,4}?)", "xabcd") == 3)
     }
 
     @Test func anchorsAndBoundaries() throws {
@@ -106,6 +110,19 @@ struct PatternTests {
         // A failed branch must not leave its captures behind.
         let branch = try #require(try run("(?:(a)x|ay)", "ay"))
         #expect(branch.groups[1] == nil)
+        // Nor may captures set inside an atomic group or a lookaround that a later failure
+        // backtracks past.
+        for (pattern, input) in [("(?:(?>(a))x|a)", "ay"), ("(?:(a)++x|a)", "ay"), ("(?:(?=(a))ax|a)", "ay"),
+                                 ("(?:(?<=(a))bx|b)", "aby")] {
+            let offset = input.hasPrefix("ab") ? 1 : 0
+            let result = try #require(try run(pattern, input, at: offset), "\(pattern)")
+            #expect(result.groups[1] == nil, "\(pattern)")
+        }
+        // A negative lookahead whose body matched leaves no captures for a backreference.
+        #expect(try length(#"(?:(?!.(b))a|a)\1"#, "abb") == nil)
+        // A successful atomic group or lookahead keeps its captures.
+        #expect(try run("(?>(a))b", "ab")?.groups[1] == "a")
+        #expect(try run("(?=(a))a", "a")?.groups[1] == "a")
         let named = try #require(try run("(?<word>[a-z]+)", "abc1"))
         #expect(named.groups[1] == "abc")
     }
@@ -163,6 +180,10 @@ struct PossessiveTests {
             (#"[a-z]+:"#, "key: v"), (#"[a-z]+ing"#, "going"), (#"\s+(\w+)"#, "   word"), (#"a+$"#, "aaa"),
             (#"a+$"#, "aab"), (#"[^"]*""#, #"abc"d"#), (#"\w+(?!\()"#, "abc("), (#"x*(?:y|x)"#, "xxy"),
             (#"x*(?:y|z)?"#, "xxx"), (#"[a-z]+\B"#, "abc"), (#"[0-9]+(?=[a-z])"#, "12ab"),
+            // A repeat that may give back every character reaches the position before the run,
+            // where `\b` and `^` can still hold.
+            (#"\w*\bfoo"#, "foo"), (#"[a-z]*\bx"#, "x"), (#"A{0,3}(\bA)"#, "A"), (#"A?\b|_"#, "A1"),
+            (#"\S{0,3}^"#, "A_b "), (#".{0,3}^[^a]{0,3}"#, " 1"), (#"\w+\bx"#, "ax"), (#"a+^"#, "aa"),
         ]
         for (pattern, input) in cases {
             let result = try run(pattern, input)

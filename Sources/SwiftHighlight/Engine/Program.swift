@@ -249,7 +249,7 @@ struct CodeGenerator {
                 // never start with a character it consumed will never profitably give one back,
                 // so it need not leave backtrack points (`\w+(?=\()` tries the lookahead once).
                 if possessify, case let .repeated(inner, min, max, .greedy) = item, let set = scalarSet(inner),
-                   let next = Self.startSet(of: items[(index + 1)...], after: set), next.isDisjoint(with: ByteMap(set)) {
+                   let next = Self.startSet(of: items[(index + 1)...], after: set, nonEmpty: min >= 1), next.isDisjoint(with: ByteMap(set)) {
                     try generate(.repeated(inner, min: min, max: max, mode: .possessive))
                 } else {
                     try generate(item)
@@ -339,7 +339,9 @@ struct CodeGenerator {
             if case let .literal(bytes, _) = item, bytes.count > 1 { return nil }
         }
         switch last {
-        case let .repeated(inner, min, max, _) where scalarSet(inner) != nil:
+        // A lazy repeat in an atomic group commits to its shortest match, which a possessive
+        // (longest) repeat would not reproduce; those keep the general atomic subroutine.
+        case let .repeated(inner, min, max, mode) where mode != .lazy && scalarSet(inner) != nil:
             return .sequence(Array(items.dropLast()) + [.repeated(inner, min: min, max: max, mode: .possessive)])
         default:
             return scalarSet(last) != nil ? node : nil
@@ -349,26 +351,33 @@ struct CodeGenerator {
     /// Bytes at which any match of `items` must begin, when that is knowable; `nil` when the
     /// continuation could match empty, look back, or depends on captured text. `repeated` is the
     /// set of the repeat right before `items`: anchors that must fail inside such a run (`\b`
-    /// after word characters, `$`) count as matching nothing.
-    static func startSet(of items: ArraySlice<PatternNode>, after repeated: ByteSet) -> ByteMap? {
+    /// after word characters, `$`) count as matching nothing. `nonEmpty` says the repeat keeps at
+    /// least one character when it gives characters back; when it can give back everything, the
+    /// position before the run is reachable, where `^` and `\b` may still match.
+    static func startSet(of items: ArraySlice<PatternNode>, after repeated: ByteSet, nonEmpty: Bool) -> ByteMap? {
         guard let first = items.first else { return nil }
         let rest = items.dropFirst()
         switch first {
         case let .literal(bytes, _):
-            guard !bytes.isEmpty else { return startSet(of: rest, after: repeated) }
+            guard !bytes.isEmpty else { return startSet(of: rest, after: repeated, nonEmpty: nonEmpty) }
             return first.firstBytes.map
         case .set, .any:
             return first.firstBytes.map
         case .empty:
-            return startSet(of: rest, after: repeated)
+            return startSet(of: rest, after: repeated, nonEmpty: nonEmpty)
         case let .anchor(kind):
             switch kind {
-            case .lineEnd, .lineStart:
+            case .lineEnd:
+                // Any position the run gives back is followed by one of its characters.
                 return ByteMap()
+            case .lineStart:
+                // Any position the run gives back, except its start, follows one of its characters.
+                return nonEmpty ? ByteMap() : nil
             case .wordBoundary:
-                // Inside a run of word characters there is no boundary.
+                // Inside a run of word characters there is no boundary, but there may be one at
+                // the run's start.
                 let words = ByteMap(ByteSet.word)
-                return ByteMap(repeated).isSubset(of: words) ? ByteMap() : nil
+                return nonEmpty && ByteMap(repeated).isSubset(of: words) ? ByteMap() : nil
             case .notWordBoundary:
                 return nil
             }
@@ -377,25 +386,25 @@ struct CodeGenerator {
             return nullable ? nil : map
         case let .group(_, inner), let .atomic(inner):
             if case let .sequence(inside) = inner {
-                return startSet(of: inside[...] + rest, after: repeated)
+                return startSet(of: inside[...] + rest, after: repeated, nonEmpty: nonEmpty)
             }
-            return startSet(of: [inner][...] + rest, after: repeated)
+            return startSet(of: [inner][...] + rest, after: repeated, nonEmpty: nonEmpty)
         case let .alternation(branches):
             var union = ByteMap()
             for branch in branches {
                 let items: ArraySlice<PatternNode>
                 if case let .sequence(inside) = branch { items = inside[...] + rest } else { items = [branch][...] + rest }
-                guard let branchSet = startSet(of: items, after: repeated) else { return nil }
+                guard let branchSet = startSet(of: items, after: repeated, nonEmpty: nonEmpty) else { return nil }
                 union.formUnion(branchSet)
             }
             return union
         case let .repeated(inner, min, _, _):
-            if min >= 1 { return startSet(of: [inner][...], after: repeated) }
-            guard let innerSet = startSet(of: [inner][...], after: repeated),
-                  let restSet = startSet(of: rest, after: repeated) else { return nil }
+            if min >= 1 { return startSet(of: [inner][...], after: repeated, nonEmpty: nonEmpty) }
+            guard let innerSet = startSet(of: [inner][...], after: repeated, nonEmpty: nonEmpty),
+                  let restSet = startSet(of: rest, after: repeated, nonEmpty: nonEmpty) else { return nil }
             return innerSet.union(restSet)
         case .sequence(let inside):
-            return startSet(of: inside[...] + rest, after: repeated)
+            return startSet(of: inside[...] + rest, after: repeated, nonEmpty: nonEmpty)
         case .look, .backreference, .delimiter:
             return nil
         }
